@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+groq
+pdfplumber
+python-docx
+gtts
+python-multipart
+pydantic[email]
+python-dotenv
+firebase-admin
