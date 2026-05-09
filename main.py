@@ -1000,6 +1000,23 @@ def interview_detail(
 # ENTRY POINT
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── Serve index.html at root (so frontend + backend live on same origin) ──────
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import pathlib
+
+_STATIC_DIR = pathlib.Path(__file__).parent / "static"
+if _STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+@app.get("/", include_in_schema=False)
+def serve_index():
+    idx = pathlib.Path(__file__).parent / "static" / "index.html"
+    if idx.exists():
+        return FileResponse(str(idx))
+    return {"message": "AI Interview Platform API — see /docs"}
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
