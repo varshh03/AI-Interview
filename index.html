@@ -526,7 +526,7 @@ footer{border-top:1px solid var(--r100);padding:32px 24px;text-align:center;font
      POST /interview/{id}/complete
      POST /resume/upload
 ══════════════════════════════════════════ */
-var API = 'http://127.0.0.1:8000';
+var API = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') ? 'http://127.0.0.1:8000' : window.location.origin;
 var TIMEOUT = 20000;
 
 /* ── State ── */
