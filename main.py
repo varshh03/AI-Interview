@@ -1,8 +1,3 @@
-"""
-AI Interview Platform - Backend (main.py)
-FastAPI + Groq + Firebase Auth + SQLite
-"""
-
 import os
 import json
 import uuid
@@ -25,7 +20,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr
-import sqlite3
+import psycopg2
+import psycopg2.extras
 
 # ── Groq ──────────────────────────────────────────────────────────────────────
 try:
@@ -72,7 +68,7 @@ logger = logging.getLogger(__name__)
 GROQ_API_KEY        = os.getenv("GROQ_API_KEY", "")
 FIREBASE_CREDENTIALS = os.getenv("FIREBASE_CREDENTIALS_JSON", "")  # JSON string
 SECRET_KEY          = os.getenv("SECRET_KEY", "changeme-secret-key-32chars-min!!")
-DATABASE_PATH       = os.getenv("DATABASE_PATH", "interview_platform.db")
+DATABASE_URL        = os.getenv("DATABASE_URL", "")
 ALLOWED_ORIGINS     = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 
 # ── Groq client ───────────────────────────────────────────────────────────────
@@ -93,38 +89,65 @@ if FIREBASE_AVAILABLE and FIREBASE_CREDENTIALS:
 # DATABASE
 # ─────────────────────────────────────────────────────────────────────────────
 
+class PGWrapper:
+    """Wraps psycopg2 connection to mimic sqlite3 interface (db.execute, fetchone, commit)."""
+    def __init__(self, conn):
+        self._conn = conn
+        self._cur = conn.cursor()
+
+    def execute(self, sql, params=None):
+        self._cur.execute(sql, params or ())
+        return self
+
+    def fetchone(self):
+        row = self._cur.fetchone()
+        return dict(row) if row else None
+
+    def fetchall(self):
+        rows = self._cur.fetchall()
+        return [dict(r) for r in rows]
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._cur.close()
+        self._conn.close()
+
+
 def get_db():
-    conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    db = PGWrapper(conn)
     try:
-        yield conn
+        yield db
     finally:
-        conn.close()
+        db.close()
 
 
 def init_db():
-    conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
+    conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
-
-    cur.executescript("""
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id          TEXT PRIMARY KEY,
             email       TEXT UNIQUE NOT NULL,
             name        TEXT,
             provider    TEXT DEFAULT 'email',
             password_hash TEXT,
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TIMESTAMP DEFAULT NOW()
         );
-
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
             id          TEXT PRIMARY KEY,
             user_id     TEXT NOT NULL,
             token       TEXT UNIQUE NOT NULL,
             expires_at  TEXT NOT NULL,
-            created_at  TEXT DEFAULT (datetime('now')),
+            created_at  TIMESTAMP DEFAULT NOW(),
             FOREIGN KEY(user_id) REFERENCES users(id)
         );
-
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS interviews (
             id              TEXT PRIMARY KEY,
             user_id         TEXT NOT NULL,
@@ -136,11 +159,12 @@ def init_db():
             answered        INTEGER DEFAULT 0,
             score           REAL DEFAULT 0,
             feedback        TEXT,
-            started_at      TEXT DEFAULT (datetime('now')),
+            started_at      TIMESTAMP DEFAULT NOW(),
             completed_at    TEXT,
             FOREIGN KEY(user_id) REFERENCES users(id)
         );
-
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS questions (
             id              TEXT PRIMARY KEY,
             interview_id    TEXT NOT NULL,
@@ -151,7 +175,8 @@ def init_db():
             audio_url       TEXT,
             FOREIGN KEY(interview_id) REFERENCES interviews(id)
         );
-
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS answers (
             id              TEXT PRIMARY KEY,
             interview_id    TEXT NOT NULL,
@@ -164,12 +189,11 @@ def init_db():
             feedback        TEXT,
             suggestions     TEXT,
             evaluated_at    TEXT,
-            submitted_at    TEXT DEFAULT (datetime('now')),
+            submitted_at    TIMESTAMP DEFAULT NOW(),
             FOREIGN KEY(interview_id) REFERENCES interviews(id),
             FOREIGN KEY(question_id) REFERENCES questions(id)
         );
     """)
-
     conn.commit()
     conn.close()
     logger.info("Database initialised ✓")
@@ -197,12 +221,12 @@ def verify_password(password: str, stored: str) -> bool:
         return False
 
 
-def create_session_token(user_id: str, db: sqlite3.Connection) -> str:
+def create_session_token(user_id: str, db) -> str:
     token = secrets.token_urlsafe(48)
     session_id = str(uuid.uuid4())
     expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
     db.execute(
-        "INSERT INTO sessions (id, user_id, token, expires_at) VALUES (?,?,?,?)",
+        "INSERT INTO sessions (id, user_id, token, expires_at) VALUES (%s,%s,%s,%s)",
         (session_id, user_id, token, expires_at)
     )
     db.commit()
@@ -211,7 +235,7 @@ def create_session_token(user_id: str, db: sqlite3.Connection) -> str:
 
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    db: sqlite3.Connection = Depends(get_db)
+    db = Depends(get_db)
 ) -> dict:
     if not credentials:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -225,10 +249,10 @@ def get_current_user(
             uid   = decoded["uid"]
             email = decoded.get("email", "")
             # upsert user
-            row = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+            row = db.execute("SELECT * FROM users WHERE id=%s", (uid,)).fetchone()
             if not row:
                 db.execute(
-                    "INSERT INTO users (id, email, name, provider) VALUES (?,?,?,?)",
+                    "INSERT INTO users (id, email, name, provider) VALUES (%s,%s,%s,%s)",
                     (uid, email, decoded.get("name", ""), "google")
                 )
                 db.commit()
@@ -506,15 +530,15 @@ def health():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/auth/signup")
-def signup(body: SignUpRequest, db: sqlite3.Connection = Depends(get_db)):
-    existing = db.execute("SELECT id FROM users WHERE email=?", (body.email,)).fetchone()
+def signup(body: SignUpRequest, db = Depends(get_db)):
+    existing = db.execute("SELECT id FROM users WHERE email=%s", (body.email,)).fetchone()
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
 
     user_id = str(uuid.uuid4())
     ph = hash_password(body.password)
     db.execute(
-        "INSERT INTO users (id, email, name, provider, password_hash) VALUES (?,?,?,?,?)",
+        "INSERT INTO users (id, email, name, provider, password_hash) VALUES (%s,%s,%s,%s,%s)",
         (user_id, body.email, body.name, "email", ph)
     )
     db.commit()
@@ -523,8 +547,8 @@ def signup(body: SignUpRequest, db: sqlite3.Connection = Depends(get_db)):
 
 
 @app.post("/auth/signin")
-def signin(body: SignInRequest, db: sqlite3.Connection = Depends(get_db)):
-    row = db.execute("SELECT * FROM users WHERE email=?", (body.email,)).fetchone()
+def signin(body: SignInRequest, db = Depends(get_db)):
+    row = db.execute("SELECT * FROM users WHERE email=%s", (body.email,)).fetchone()
     if not row or not verify_password(body.password, row["password_hash"] or ""):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -533,7 +557,7 @@ def signin(body: SignInRequest, db: sqlite3.Connection = Depends(get_db)):
 
 
 @app.post("/auth/firebase")
-def firebase_signin(body: FirebaseTokenRequest, db: sqlite3.Connection = Depends(get_db)):
+def firebase_signin(body: FirebaseTokenRequest, db = Depends(get_db)):
     """Exchange a Firebase ID token for a platform session."""
     if not FIREBASE_AVAILABLE:
         raise HTTPException(status_code=501, detail="Firebase not configured")
@@ -542,10 +566,10 @@ def firebase_signin(body: FirebaseTokenRequest, db: sqlite3.Connection = Depends
         uid   = decoded["uid"]
         email = decoded.get("email", "")
         name  = decoded.get("name", "")
-        row = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        row = db.execute("SELECT * FROM users WHERE id=%s", (uid,)).fetchone()
         if not row:
             db.execute(
-                "INSERT INTO users (id, email, name, provider) VALUES (?,?,?,?)",
+                "INSERT INTO users (id, email, name, provider) VALUES (%s,%s,%s,%s)",
                 (uid, email, name, "google")
             )
             db.commit()
@@ -558,10 +582,10 @@ def firebase_signin(body: FirebaseTokenRequest, db: sqlite3.Connection = Depends
 @app.post("/auth/signout")
 def signout(
     creds: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    db: sqlite3.Connection = Depends(get_db)
+    db = Depends(get_db)
 ):
     if creds:
-        db.execute("DELETE FROM sessions WHERE token=?", (creds.credentials,))
+        db.execute("DELETE FROM sessions WHERE token=%s", (creds.credentials,))
         db.commit()
     return {"message": "Signed out"}
 
@@ -625,7 +649,7 @@ async def upload_resume(
 def start_interview(
     body: StartInterviewRequest,
     user: dict = Depends(get_current_user),
-    db: sqlite3.Connection = Depends(get_db)
+    db = Depends(get_db)
 ):
     try:
         effective_domain = body.custom_domain if body.domain == "other" and body.custom_domain else body.domain
@@ -635,7 +659,7 @@ def start_interview(
         db.execute(
             """INSERT INTO interviews
                (id, user_id, domain, custom_domain, total_questions, status)
-               VALUES (?,?,?,?,?,?)""",
+               VALUES (%s,%s,%s,%s,%s,%s)""",
             (interview_id, user["id"], body.domain, body.custom_domain or "", num, "active")
         )
         question_rows = []
@@ -644,7 +668,7 @@ def start_interview(
             db.execute(
                 """INSERT INTO questions
                    (id, interview_id, question_text, question_type, difficulty, order_num)
-                   VALUES (?,?,?,?,?,?)""",
+                   VALUES (%s,%s,%s,%s,%s,%s)""",
                 (qid, interview_id, q["question"], q.get("type","conceptual"),
                  q.get("difficulty","medium"), i + 1)
             )
@@ -674,7 +698,7 @@ async def start_interview_with_resume(
     num_questions: int = Form(5),
     resume: UploadFile = File(...),
     user: dict = Depends(get_current_user),
-    db: sqlite3.Connection = Depends(get_db)
+    db = Depends(get_db)
 ):
     import io
     # Read file content first (async) then pass to sync extractor
@@ -705,7 +729,7 @@ async def start_interview_with_resume(
     db.execute(
         """INSERT INTO interviews
            (id, user_id, domain, custom_domain, resume_text, total_questions, status)
-           VALUES (?,?,?,?,?,?,?)""",
+           VALUES (%s,%s,%s,%s,%s,%s,%s)""",
         (interview_id, user["id"], domain, custom_domain, resume_text[:5000], num, "active")
     )
 
@@ -715,7 +739,7 @@ async def start_interview_with_resume(
         db.execute(
             """INSERT INTO questions
                (id, interview_id, question_text, question_type, difficulty, order_num)
-               VALUES (?,?,?,?,?,?)""",
+               VALUES (%s,%s,%s,%s,%s,%s)""",
             (qid, interview_id, q["question"], q.get("type","conceptual"),
              q.get("difficulty","medium"), i + 1)
         )
@@ -741,7 +765,7 @@ async def start_interview_with_resume(
 def get_interview(
     interview_id: str,
     user: dict = Depends(get_current_user),
-    db: sqlite3.Connection = Depends(get_db)
+    db = Depends(get_db)
 ):
     interview = db.execute(
         "SELECT * FROM interviews WHERE id=? AND user_id=?",
@@ -771,7 +795,7 @@ def get_interview(
 def submit_answer(
     body: SubmitAnswerRequest,
     user: dict = Depends(get_current_user),
-    db: sqlite3.Connection = Depends(get_db)
+    db = Depends(get_db)
 ):
     # validate ownership
     interview = db.execute(
@@ -809,7 +833,7 @@ def submit_answer(
         """INSERT INTO answers
            (id, interview_id, question_id, user_id,
             answer_text, answer_type, score, max_score, feedback, suggestions, evaluated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
         (answer_id, body.interview_id, body.question_id, user["id"],
          body.answer_text, body.answer_type, score, 10.0, feedback, suggestions,
          datetime.utcnow().isoformat())
@@ -835,7 +859,7 @@ def submit_answer(
 def complete_interview(
     interview_id: str,
     user: dict = Depends(get_current_user),
-    db: sqlite3.Connection = Depends(get_db)
+    db = Depends(get_db)
 ):
     interview = db.execute(
         "SELECT * FROM interviews WHERE id=? AND user_id=?",
@@ -899,13 +923,13 @@ async def transcribe(
 def question_audio(
     question_id: str,
     user: dict = Depends(get_current_user),
-    db: sqlite3.Connection = Depends(get_db)
+    db = Depends(get_db)
 ):
     """Return TTS audio (MP3) for a question so the robot can speak it."""
     if not TTS_SUPPORT:
         raise HTTPException(status_code=501, detail="TTS not available (install gTTS)")
 
-    q = db.execute("SELECT question_text FROM questions WHERE id=?", (question_id,)).fetchone()
+    q = db.execute("SELECT question_text FROM questions WHERE id=%s", (question_id,)).fetchone()
     if not q:
         raise HTTPException(status_code=404, detail="Question not found")
 
@@ -923,7 +947,7 @@ def question_audio(
 @app.get("/history")
 def get_history(
     user: dict = Depends(get_current_user),
-    db: sqlite3.Connection = Depends(get_db)
+    db = Depends(get_db)
 ):
     """All completed + active interviews for the current user."""
     rows = db.execute(
@@ -965,7 +989,7 @@ def get_history(
 def interview_detail(
     interview_id: str,
     user: dict = Depends(get_current_user),
-    db: sqlite3.Connection = Depends(get_db)
+    db = Depends(get_db)
 ):
     interview = db.execute(
         "SELECT * FROM interviews WHERE id=? AND user_id=?",
@@ -1000,23 +1024,6 @@ def interview_detail(
 # ENTRY POINT
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── Serve index.html at root (so frontend + backend live on same origin) ──────
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-import pathlib
-
-_STATIC_DIR = pathlib.Path(__file__).parent / "static"
-if _STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
-
-@app.get("/", include_in_schema=False)
-def serve_index():
-    idx = pathlib.Path(__file__).parent / "static" / "index.html"
-    if idx.exists():
-        return FileResponse(str(idx))
-    return {"message": "AI Interview Platform API — see /docs"}
-
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
