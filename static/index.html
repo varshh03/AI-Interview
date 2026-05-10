@@ -845,6 +845,15 @@ function startInterview() {
     toast('Using offline questions (' + e.message + ')');
     S.questions = fallbackQs(domain || 'General');
     document.getElementById('qTot').textContent = '/ ' + S.questions.length;
+    // Still create a session on backend so history saves
+    apiFetch('/interview/start', {
+      method: 'POST',
+      body: JSON.stringify({ domain: domain || 'General', custom_domain: S.customDomain || '', num_questions: S.questions.length })
+    }).then(function(data) {
+      S.interviewId = data.interview_id || data.id || '';
+    }).catch(function() {
+      S.interviewId = 'local-' + Date.now();
+    });
     renderQ(0);
   });
 }
@@ -1034,8 +1043,10 @@ function stopRec() {
 function endSession() {
   if(window.speechSynthesis) speechSynthesis.cancel();
   stopRec();
-  if (S.interviewId && !S.interviewId.startsWith('local')) {
-    apiFetch('/interview/'+S.interviewId+'/complete', {method:'POST'}).catch(function(){});
+  if (S.interviewId && !S.interviewId.startsWith('local-')) {
+    apiFetch('/interview/'+S.interviewId+'/complete', {method:'POST'})
+    .then(function(){ toast('Session saved to history ✓'); })
+    .catch(function(){});
   }
   buildSummary(); showView('summary');
 }
