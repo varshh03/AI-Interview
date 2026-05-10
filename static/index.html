@@ -513,6 +513,23 @@ footer{border-top:1px solid var(--r100);padding:32px 24px;text-align:center;font
   </div>
 </section>
 
+<!-- ══ HISTORY VIEW ══════════════════════════════════════════════ -->
+<section id="history" class="view">
+  <div style="max-width:860px;margin:0 auto;padding:120px 24px 60px">
+    <div style="margin-bottom:32px">
+      <h2 style="font-family:'Cormorant Garamond',serif;font-size:2rem;font-weight:700;color:var(--s900)">Interview History</h2>
+      <p style="color:var(--s500);margin-top:6px">All your past sessions and scores</p>
+    </div>
+    <div id="domainStats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:32px"></div>
+    <div id="historyList" style="display:flex;flex-direction:column;gap:14px">
+      <div class="loader"><span></span><span></span><span></span></div>
+    </div>
+    <div style="text-align:center;margin-top:32px">
+      <button class="btn btn-ghost btn-lg" onclick="showView('dashboard')">&#8592; Back to Dashboard</button>
+    </div>
+  </div>
+</section>
+
 </div>
 
 <script>
@@ -526,7 +543,7 @@ footer{border-top:1px solid var(--r100);padding:32px 24px;text-align:center;font
      POST /interview/{id}/complete
      POST /resume/upload
 ══════════════════════════════════════════ */
-var API = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') ? 'http://127.0.0.1:8000' : window.location.origin;
+var API = 'http://127.0.0.1:8000';
 var TIMEOUT = 20000;
 
 /* ── State ── */
@@ -1133,6 +1150,67 @@ function goAuth(tab) {
   if(S.token && S.user) { showView('dashboard'); return; }
   showView('auth'); setTab(tab||'login');
 }
+
+/* ── Load History ── */
+function loadHistory() {
+  var list = document.getElementById('historyList');
+  var stats = document.getElementById('domainStats');
+  if (!list) return;
+  list.innerHTML = '<div class="loader"><span></span><span></span><span></span></div>';
+  if (stats) stats.innerHTML = '';
+  apiFetch('/history')
+  .then(function(d) {
+    var domainData = d.domain_stats || [];
+    if (stats && domainData.length) {
+      stats.innerHTML = '';
+      domainData.forEach(function(ds) {
+        var card = document.createElement('div');
+        card.className = 'glass';
+        card.style.cssText = 'padding:20px 24px;text-align:center';
+        card.innerHTML =
+          '<div style="font-size:.75rem;font-weight:700;color:var(--r400);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">' + (ds.domain || 'General') + '</div>' +
+          '<div style="font-family:Cormorant Garamond,serif;font-size:2.4rem;font-weight:700;color:var(--s900);line-height:1">' + Math.round(ds.avg_score || 0) + '</div>' +
+          '<div style="font-size:.78rem;color:var(--s400);margin-top:4px">' + (ds.attempts || 0) + ' session' + ((ds.attempts||0)!==1?'s':'') + '</div>';
+        stats.appendChild(card);
+      });
+    }
+    var interviews = d.interviews || [];
+    if (!interviews.length) {
+      list.innerHTML = '<div class="glass" style="padding:40px;text-align:center;color:var(--s400)">No interviews yet. <a onclick="showView(&quot;dashboard&quot;)" style="color:var(--r400);cursor:pointer;font-weight:600">Start your first session &#8594;</a></div>';
+      return;
+    }
+    list.innerHTML = '';
+    interviews.forEach(function(iv) {
+      var score = Math.round(iv.score || iv.avg_score_per_q || 0);
+      var statusText = iv.status === 'completed' ? '&#10003; Completed' : '&#9679; In Progress';
+      var statusColor = iv.status === 'completed' ? 'var(--r400)' : 'var(--s400)';
+      var date = iv.started_at ? new Date(iv.started_at).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}) : 'Unknown date';
+      var domain = iv.custom_domain || iv.domain || 'General';
+      var card = document.createElement('div');
+      card.className = 'glass';
+      card.style.cssText = 'padding:20px 24px;display:grid;grid-template-columns:1fr auto;align-items:center;gap:16px;transition:transform .2s;cursor:default';
+      card.onmouseover = function(){ this.style.transform='translateY(-2px)'; };
+      card.onmouseout  = function(){ this.style.transform='none'; };
+      card.innerHTML =
+        '<div>' +
+          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">' +
+            '<span style="font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:50px;background:var(--r50);color:var(--r500)">' + domain + '</span>' +
+            '<span style="font-size:.72rem;color:' + statusColor + ';font-weight:600">' + statusText + '</span>' +
+          '</div>' +
+          '<div style="font-size:.86rem;color:var(--s500)">' + date + ' &nbsp;&#183;&nbsp; ' + (iv.answered||0) + ' / ' + (iv.total_questions||0) + ' questions answered</div>' +
+        '</div>' +
+        '<div style="text-align:center">' +
+          '<div style="font-family:Cormorant Garamond,serif;font-size:2.2rem;font-weight:700;color:var(--r500);line-height:1">' + (score||'&#8212;') + '</div>' +
+          '<div style="font-size:.72rem;color:var(--s400);margin-top:2px">score</div>' +
+        '</div>';
+      list.appendChild(card);
+    });
+  })
+  .catch(function() {
+    if(list) list.innerHTML = '<div class="glass" style="padding:32px;text-align:center;color:var(--s400)">Could not load history. Please sign in and try again.</div>';
+  });
+}
+
 </script>
 </body>
 </html>
