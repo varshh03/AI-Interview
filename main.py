@@ -327,7 +327,7 @@ QUESTION_TYPE_PROMPT = {
 }
 
 
-def _groq_chat(messages: list, model="llama-3.3-70b-versatile", temperature=0.7, max_tokens=1024) -> str:
+def _groq_chat(messages: list, model="llama-3.1-8b-instant", temperature=0.7, max_tokens=1024) -> str:
     if not groq_client:
         raise HTTPException(status_code=503, detail="Groq API key not configured")
     try:
