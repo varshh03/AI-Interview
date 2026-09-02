@@ -504,6 +504,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.mount("/static", StaticFiles(directory="static"), name="static")
+@app.get("/")
+async def home():
+    return FileResponse("static/index.html")
+    
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
