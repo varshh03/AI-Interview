@@ -9,6 +9,8 @@ from typing import Optional, List
 from pathlib import Path
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 load_dotenv()
 
 import httpx
