@@ -263,6 +263,9 @@ def get_current_user(
             pass  # fall through to DB session
 
     # ── DB session token ──────────────────────────────────────────────────────
+    token = credentials.credentials
+    logger.info(f"TOKEN RECEIVED: {token}")
+    
     row = db.execute(
     """
     SELECT s.user_id, s.expires_at, u.email, u.name
@@ -272,6 +275,7 @@ def get_current_user(
     """,
     (token,)
     ).fetchone()
+    logger.info(f"SESSION FOUND: {bool(row)}")
 
     if not row:
         raise HTTPException(status_code=401, detail="Invalid token")
