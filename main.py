@@ -620,7 +620,6 @@ def list_domains():
 @app.post("/resume/upload")
 async def upload_resume(
     file: UploadFile = File(...),
-    user: dict = Depends(get_current_user),
 ):
     """Parse resume and return extracted text. Frontend stores in state."""
     import io
