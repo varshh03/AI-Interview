@@ -264,10 +264,13 @@ def get_current_user(
 
     # ── DB session token ──────────────────────────────────────────────────────
     row = db.execute(
-        """SELECT s.user_id, s.expires_at, u.email, u.name
-           FROM sessions s JOIN users u ON u.id=s.user_id
-           WHERE s.token=?""",
-        (token,)
+    """
+    SELECT s.user_id, s.expires_at, u.email, u.name
+    FROM sessions s
+    JOIN users u ON u.id = s.user_id
+    WHERE s.token=%s
+    """,
+    (token,)
     ).fetchone()
 
     if not row:
